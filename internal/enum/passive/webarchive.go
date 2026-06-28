@@ -43,7 +43,7 @@ func (p *WebarchiveProvider) Enumerate(ctx context.Context, domain string) ([]Su
 	domain = strings.TrimPrefix(domain, "*.")
 	baseURL := p.BaseURL
 	if baseURL == "" {
-		baseURL = "http://web.archive.org"
+		baseURL = "https://web.archive.org"
 	}
 	urlStr := fmt.Sprintf("%s/cdx/search/cdx?url=*.%s/*&output=json&fl=original&collapse=urlkey", baseURL, domain)
 

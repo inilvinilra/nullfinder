@@ -60,7 +60,7 @@ It implements all discovery engines natively in Go without external CLI wrappers
 
 		// Set up custom resolver-aware HTTP client for passive providers
 		resolvers := dns.EffectiveResolvers(Cfg.DNS.ResolverMode, Cfg.DNS.Resolvers, nil, Cfg.DNS.FallbackPublicResolvers)
-		passive.HTTPClient = netutil.GetHTTPClient(resolvers, 10*time.Second, true)
+		passive.HTTPClient = netutil.GetHTTPClient(resolvers, passiveHTTPTimeout(Cfg), true)
 		passive.Configure(Cfg)
 
 		logx.Log.Debug().Msg("Logger and configuration system initialized")
@@ -86,4 +86,38 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&SilentLog, "silent", false, "suppress console logs")
 	RootCmd.PersistentFlags().BoolVar(&VerboseLog, "verbose", false, "display detailed debug logs")
 	RootCmd.PersistentFlags().BoolVar(&NoColorLog, "no-color", false, "disable console color highlighting")
+}
+
+func passiveHTTPTimeout(cfg *config.Config) time.Duration {
+	timeout := 10 * time.Second
+	if cfg == nil {
+		return timeout
+	}
+
+	candidates := []int{
+		cfg.Scan.TimeoutSeconds,
+		cfg.Providers.Crtsh.TimeoutSeconds,
+		cfg.Providers.WebArchive.TimeoutSeconds,
+		cfg.Providers.SecurityTrails.TimeoutSeconds,
+		cfg.Providers.Censys.TimeoutSeconds,
+		cfg.Providers.Shodan.TimeoutSeconds,
+		cfg.Providers.HackerTarget.TimeoutSeconds,
+		cfg.Providers.Anubis.TimeoutSeconds,
+		cfg.Providers.AlienVault.TimeoutSeconds,
+		cfg.Providers.ThreatCrowd.TimeoutSeconds,
+		cfg.Providers.CertSpotter.TimeoutSeconds,
+		cfg.Providers.URLScan.TimeoutSeconds,
+		cfg.Providers.CommonCrawl.TimeoutSeconds,
+		cfg.Providers.RapidDNS.TimeoutSeconds,
+		cfg.Providers.THC.TimeoutSeconds,
+	}
+	for _, seconds := range candidates {
+		if seconds > 0 && time.Duration(seconds)*time.Second > timeout {
+			timeout = time.Duration(seconds) * time.Second
+		}
+	}
+	if timeout < 10*time.Second {
+		timeout = 10 * time.Second
+	}
+	return timeout
 }

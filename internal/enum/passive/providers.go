@@ -3,6 +3,7 @@ package passive
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -14,6 +15,13 @@ import (
 
 // Registry lists all compiled passive providers. Individual provider modules append themselves here in init().
 var Registry []PassiveProvider
+
+var providerRuntimeState sync.Map
+
+type runtimeProviderState struct {
+	Failures      int
+	CooldownUntil time.Time
+}
 
 // GetEnabledProviders filters and returns providers enabled in the config.
 func GetEnabledProviders(cfg *config.Config) []PassiveProvider {
@@ -44,6 +52,14 @@ func EnumerateAll(ctx context.Context, domain string, cfg *config.Config) []Subd
 		go func(p PassiveProvider) {
 			defer wg.Done()
 
+			if until, ok := providerCooldownUntil(p.Name()); ok {
+				logx.Log.Info().
+					Str("provider", p.Name()).
+					Time("retry_after", until).
+					Msg("Skipping passive provider during cooldown window")
+				return
+			}
+
 			logx.Log.Info().Str("provider", p.Name()).Msg("Querying passive provider...")
 
 			pCtx, cancel := context.WithTimeout(ctx, providerTimeout(cfg, p.Name()))
@@ -51,12 +67,14 @@ func EnumerateAll(ctx context.Context, domain string, cfg *config.Config) []Subd
 
 			res, err := enumerateWithRetry(pCtx, p, domain)
 			if err != nil {
+				recordProviderFailure(p.Name(), err)
 				logx.Log.Warn().
 					Err(err).
 					Str("provider", p.Name()).
 					Msg("Passive provider execution failed")
 				return
 			}
+			recordProviderSuccess(p.Name())
 
 			mu.Lock()
 			allResults = append(allResults, res...)
@@ -132,6 +150,7 @@ func isRetryableProviderError(err error) bool {
 		"http error code: 503",
 		"http error: 504",
 		"http error code: 504",
+		"eof",
 	} {
 		if strings.Contains(msg, token) {
 			return true
@@ -202,4 +221,70 @@ func providerTimeout(cfg *config.Config, providerName string) time.Duration {
 		}
 	}
 	return timeout
+}
+
+func providerCooldownUntil(name string) (time.Time, bool) {
+	value, ok := providerRuntimeState.Load(name)
+	if !ok {
+		return time.Time{}, false
+	}
+	state, ok := value.(runtimeProviderState)
+	if !ok || state.CooldownUntil.IsZero() {
+		return time.Time{}, false
+	}
+	if time.Now().Before(state.CooldownUntil) {
+		return state.CooldownUntil, true
+	}
+	return time.Time{}, false
+}
+
+func recordProviderSuccess(name string) {
+	providerRuntimeState.Store(name, runtimeProviderState{})
+}
+
+func recordProviderFailure(name string, err error) {
+	value, _ := providerRuntimeState.Load(name)
+	state, _ := value.(runtimeProviderState)
+	state.Failures++
+	if cooldown := providerFailureCooldown(err, state.Failures); cooldown > 0 {
+		state.CooldownUntil = time.Now().Add(cooldown)
+		logx.Log.Info().
+			Str("provider", name).
+			Dur("cooldown", cooldown).
+			Str("reason", summarizeProviderError(err)).
+			Msg("Cooling down passive provider after repeated failures")
+	}
+	providerRuntimeState.Store(name, state)
+}
+
+func providerFailureCooldown(err error, failures int) time.Duration {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "429"), strings.Contains(message, "too many requests"):
+		return 2 * time.Minute
+	case strings.Contains(message, "context deadline exceeded"), strings.Contains(message, "timeout"):
+		if failures >= 2 {
+			return 45 * time.Second
+		}
+	case strings.Contains(message, "eof"), strings.Contains(message, "connect: connection refused"):
+		if failures >= 2 {
+			return 30 * time.Second
+		}
+	case strings.Contains(message, "502"), strings.Contains(message, "503"), strings.Contains(message, "504"):
+		if failures >= 2 {
+			return 30 * time.Second
+		}
+	}
+	return 0
+}
+
+func summarizeProviderError(err error) string {
+	message := strings.TrimSpace(err.Error())
+	if idx := strings.IndexByte(message, '\n'); idx >= 0 {
+		message = message[:idx]
+	}
+	if len(message) > 120 {
+		message = message[:117] + "..."
+	}
+	return fmt.Sprintf("%s", message)
 }
