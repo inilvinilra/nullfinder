@@ -31,4 +31,5 @@ nullfinder.db.lock
 *.njsproj
 *.sln
 *.swp
+.smoke-*/
 .DS_Store

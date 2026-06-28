@@ -67,12 +67,20 @@ export CENSYS_API_SECRET="..."
 
 ```bash
 nullfinder scan --domain example.com --mode hybrid
+nullfinder batch --domains-file targets/domains.txt --ips-file targets/ips.txt
 nullfinder enum --domain example.com --mode passive
 nullfinder dns --input subdomains.txt
 nullfinder http --input resolved_subdomains.txt
 nullfinder ports --input resolved_subdomains.txt --profile web
 nullfinder report --scan-id example-com-2026-06-23-120000
 ```
+
+Target list templates:
+
+- [targets/domains.txt](/home/null/Desktop/NıulFinder/scoperecon/targets/domains.txt)
+- [targets/ips.txt](/home/null/Desktop/NıulFinder/scoperecon/targets/ips.txt)
+
+The `batch` command discovers assets from domains, forwards resolved IPs into HTTP and port analysis, merges direct IP targets, and writes a single combined report.
 
 ## Output Layout
 
