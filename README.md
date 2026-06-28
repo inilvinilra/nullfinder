@@ -68,6 +68,7 @@ export CENSYS_API_SECRET="..."
 ```bash
 nullfinder scan --domain example.com --mode hybrid
 nullfinder batch --domains-file targets/domains.txt --ips-file targets/ips.txt
+nullfinder compare --domains-file targets/domains.txt --ips-file targets/ips.txt
 nullfinder enum --domain example.com --mode passive
 nullfinder dns --input subdomains.txt
 nullfinder http --input resolved_subdomains.txt
@@ -82,6 +83,8 @@ Target list templates:
 
 The `batch` command discovers assets from domains, forwards resolved IPs into HTTP and port analysis, merges direct IP targets, and writes a single combined report.
 
+The `compare` command runs that same base pipeline first, then executes external tools in sequence. Subdomain tooling (`subfinder`, `assetfinder`, `amass`) is consolidated and verified before host-level comparison continues with `naabu`, `nmap`, `rustscan`, and optionally `masscan`.
+
 ## Output Layout
 
 Primary scan output is written to `results/{scan-id}/`:
@@ -95,6 +98,9 @@ Primary scan output is written to `results/{scan-id}/`:
 - `candidate_subdomains.txt`
 - `live_urls.txt`
 - `open_ports.txt`
+- `comparison/`
+
+When `compare` is used, the `comparison/` folder contains per-tool outputs plus `comparison_summary.json` and `comparison_summary.txt`. `masscan` requires elevated privileges or Linux capabilities such as `cap_net_raw`; otherwise its failure is recorded in the comparison summary without stopping the rest of the workflow.
 
 ## Safety Model
 

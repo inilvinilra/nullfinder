@@ -30,6 +30,28 @@ var (
 	BatchProfile     string
 )
 
+type batchRunOptions struct {
+	DomainsFile string
+	IPsFile     string
+	Name        string
+	Mode        string
+	Profile     string
+}
+
+type batchRunResult struct {
+	PathManager         *output.PathManager
+	Domains             []string
+	DirectHosts         []string
+	ResolvedSubdomains  []string
+	WildcardSubdomains  []string
+	AllSubdomains       []string
+	CandidateSubdomains []string
+	ScanTargets         []portscan.ScanTarget
+	ProbeResults        []httpprobe.ProbeResult
+	PortResults         []portscan.PortResult
+	Assets              []storage.AssetRecord
+}
+
 type directIPTarget struct {
 	Host         string
 	ExplicitPort int
@@ -42,222 +64,28 @@ var batchCmd = &cobra.Command{
 into HTTP/port analysis, merges direct IP targets, and generates a single consolidated report.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logx.Log.Info().Msg("Initializing NullFinder batch orchestration...")
-
-		domains, err := readLines(BatchDomainsFile)
-		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to read domains file: %w", err)
-		}
-		directTargets, err := readDirectIPTargets(BatchIPsFile)
-		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to read IP targets file: %w", err)
-		}
-
-		if len(domains) == 0 && len(directTargets) == 0 {
-			return fmt.Errorf("no targets loaded from %s or %s", BatchDomainsFile, BatchIPsFile)
-		}
-
-		targetName := BatchName
-		if targetName == "" {
-			targetName = "batch-targets"
-		}
-
-		pm, err := output.NewPathManager(targetName, OutputDir)
-		if err != nil {
-			return fmt.Errorf("failed to initialize output manager: %w", err)
-		}
-		if err := pm.InitDirectories(); err != nil {
-			return fmt.Errorf("failed to create output directory: %w", err)
-		}
-
 		ctx := context.Background()
-		logx.Log.Info().Str("scan_id", pm.ScanID).Msg("Batch scan session directories initialized")
-
-		resolvers := dns.EffectiveResolvers(Cfg.DNS.ResolverMode, Cfg.DNS.Resolvers, nil, Cfg.DNS.FallbackPublicResolvers)
-		passive.Configure(Cfg)
-
-		var discovery *scanpkg.DiscoveryResult
-		if len(domains) > 0 {
-			inScope := buildBatchScope(domains)
-			settings := scanpkg.ResolveDiscoverySettings(BatchMode, Cfg, false, false, Cfg.Scan.MaxDepth)
-			discovery, err = scanpkg.DiscoverAssets(ctx, Cfg, scanpkg.DiscoveryOptions{
-				InScope:   inScope,
-				Mode:      BatchMode,
-				Wordlist:  Cfg.Enum.Wordlist,
-				Resolvers: resolvers,
-				RateLimit: Cfg.Scan.RateLimitPerSecond,
-				Settings:  settings,
-			})
-			if err != nil {
-				return err
-			}
-		} else {
-			discovery = &scanpkg.DiscoveryResult{}
+		result, err := runBatchPipeline(ctx, batchRunOptions{
+			DomainsFile: BatchDomainsFile,
+			IPsFile:     BatchIPsFile,
+			Name:        BatchName,
+			Mode:        BatchMode,
+			Profile:     BatchProfile,
+		})
+		if err != nil {
+			return err
 		}
-
-		resolvedSubdomains := discovery.ResolvedSubdomains
-		wildcardSubdomains := discovery.WildcardSubdomains
-		cnames := discovery.CNAMEs
-		finalDNSResults := discovery.DNSResults
-		allSubs := discovery.AllSubdomains
-		candidateSubs := discovery.CandidateSubdomains
-
-		if len(allSubs) > 0 {
-			_ = output.WriteLines(pm.GetFilePath("all_subdomains.txt"), allSubs)
-		}
-		if len(candidateSubs) > 0 {
-			_ = output.WriteLines(pm.GetFilePath("candidate_subdomains.txt"), candidateSubs)
-		}
-		if len(resolvedSubdomains) > 0 {
-			_ = output.WriteLines(pm.GetFilePath("resolved_subdomains.txt"), resolvedSubdomains)
-		}
-		if len(wildcardSubdomains) > 0 {
-			_ = output.WriteLines(pm.GetFilePath("wildcard_subdomains.txt"), wildcardSubdomains)
-		}
-		if len(cnames) > 0 {
-			_ = output.WriteLines(pm.GetFilePath("cnames.txt"), cnames)
-		}
-
-		scanTargets := scanpkg.BuildPortScanTargets(resolvedSubdomains, finalDNSResults)
-		explicitPorts := make(map[int]struct{})
-		directHostSet := make(map[string]struct{})
-		for _, target := range directTargets {
-			scanTargets = append(scanTargets, portscan.ScanTarget{Domain: target.Host, Address: target.Host})
-			directHostSet[target.Host] = struct{}{}
-			if target.ExplicitPort > 0 {
-				explicitPorts[target.ExplicitPort] = struct{}{}
-			}
-		}
-		scanTargets = dedupeScanTargets(scanTargets)
-
-		var directHosts []string
-		for host := range directHostSet {
-			directHosts = append(directHosts, host)
-		}
-		sort.Strings(directHosts)
-		if len(directHosts) > 0 {
-			_ = output.WriteLines(pm.GetFilePath("direct_ips.txt"), directHosts)
-		}
-
-		probeInputs := dedupeStrings(append(append([]string{}, resolvedSubdomains...), directHosts...))
-		combinedTargetLines := scanTargetStrings(scanTargets)
-		if len(combinedTargetLines) > 0 {
-			_ = output.WriteLines(pm.GetFilePath("combined_targets.txt"), combinedTargetLines)
-		}
-
-		scanPorts := batchPorts(BatchProfile, explicitPorts)
-		httpPorts := batchHTTPPorts(explicitPorts)
-
-		var probeResults []httpprobe.ProbeResult
-		var liveURLs []string
-		var interestingURLs []string
-		var honeypotURLs []string
-
-		if Cfg.HTTP.Enabled && len(probeInputs) > 0 {
-			logx.Log.Info().Int("count", len(probeInputs)).Msg("Running automated HTTP/HTTPS probing...")
-			prober := httpprobe.NewProber(
-				httpPorts,
-				Cfg.Scan.Threads,
-				Cfg.Scan.RateLimitPerSecond,
-				Cfg.HTTP.TimeoutSeconds,
-				Cfg.HTTP.FollowRedirects,
-				Cfg.HTTP.MaxRedirects,
-				resolvers,
-			)
-			probeResults = prober.ProbeBatch(ctx, probeInputs)
-			for _, res := range probeResults {
-				liveURLs = append(liveURLs, res.URL)
-				if res.IsInteresting {
-					interestingURLs = append(interestingURLs, fmt.Sprintf("%s [%d] (%s) -> %s", res.URL, res.StatusCode, res.Title, res.InterestingReason))
-				}
-				if res.PotentialHoneypot {
-					honeypotURLs = append(honeypotURLs, fmt.Sprintf("%s [%d] -> %s", res.URL, res.StatusCode, res.HoneypotReason))
-				}
-			}
-			_ = output.WriteLines(pm.GetFilePath("live_urls.txt"), liveURLs)
-			if len(interestingURLs) > 0 {
-				_ = output.WriteLines(pm.GetFilePath("interesting_urls.txt"), interestingURLs)
-			}
-			if len(honeypotURLs) > 0 {
-				_ = output.WriteLines(pm.GetFilePath("honeypot_urls.txt"), honeypotURLs)
-			}
-			if data, err := json.MarshalIndent(probeResults, "", "  "); err == nil {
-				_ = os.WriteFile(pm.GetFilePath("http_responses.json"), data, 0644)
-			}
-		}
-
-		var portResults []portscan.PortResult
-		var openPortLines []string
-		var honeypotPortLines []string
-
-		if len(scanTargets) > 0 {
-			logx.Log.Info().Int("count", len(scanTargets)).Msg("Running automated TCP port analysis...")
-			scanner := portscan.NewPortScanner(
-				Cfg.PortScan.Workers,
-				Cfg.PortScan.RateLimitPerSecond,
-				Cfg.PortScan.TimeoutSeconds,
-			)
-			portResults = scanner.ScanResolvedBatch(ctx, scanTargets, scanPorts)
-			for _, res := range portResults {
-				endpoint := res.Domain
-				if res.Address != "" && res.Address != res.Domain {
-					endpoint = fmt.Sprintf("%s [%s]", res.Domain, res.Address)
-				}
-				line := fmt.Sprintf("%s:%d (%s)", endpoint, res.Port, res.Service)
-				if res.Product != "" {
-					line += fmt.Sprintf(" | Product: %s", res.Product)
-					if res.Version != "" {
-						line += " " + res.Version
-					}
-				}
-				if res.Banner != "" {
-					clean := strings.ReplaceAll(res.Banner, "\n", " ")
-					clean = strings.ReplaceAll(clean, "\r", " ")
-					if len(clean) > 40 {
-						clean = clean[:40] + "..."
-					}
-					line += fmt.Sprintf(" | Banner: %s", clean)
-				}
-				openPortLines = append(openPortLines, line)
-				if res.PotentialHoneypot {
-					honeypotPortLines = append(honeypotPortLines, fmt.Sprintf("%s:%d (%s) -> %s", endpoint, res.Port, res.Service, res.HoneypotReason))
-				}
-			}
-			_ = output.WriteLines(pm.GetFilePath("open_ports.txt"), openPortLines)
-			if len(honeypotPortLines) > 0 {
-				_ = output.WriteLines(pm.GetFilePath("honeypot_ports.txt"), honeypotPortLines)
-			}
-			if data, err := json.MarshalIndent(portResults, "", "  "); err == nil {
-				_ = os.WriteFile(pm.GetFilePath("portscan_results.json"), data, 0644)
-			}
-		}
-
-		assets := buildBatchAssets(resolvedSubdomains, finalDNSResults, directHosts, probeResults, portResults)
-
-		db, err := storage.NewBoltDB(Cfg.Storage.Path)
-		if err == nil {
-			defer db.Close()
-			_ = db.SaveScan(pm.ScanID, targetName, BatchMode)
-			for _, asset := range assets {
-				_ = db.SaveAsset(pm.ScanID, asset)
-			}
-		}
-
-		_ = report.ExportJSON(pm.GetFilePath("report.json"), assets)
-		_ = report.ExportYAML(pm.GetFilePath("report.yaml"), assets)
-		_ = report.ExportCSV(pm.GetFilePath("report.csv"), assets)
-		_ = report.ExportTXT(pm.GetFilePath("report.txt"), targetName, pm.ScanID, assets)
-		_ = report.ExportHTML(pm.GetFilePath("report.html"), targetName, pm.ScanID, assets)
 
 		fmt.Printf("\nNullFinder Batch Pipeline Completed\n\n")
-		fmt.Printf("Scan ID: %s\n", pm.ScanID)
-		fmt.Printf("Domains loaded: %d\n", len(domains))
-		fmt.Printf("Direct IP targets loaded: %d\n", len(directHosts))
-		fmt.Printf("Resolved domain assets: %d\n", len(resolvedSubdomains))
-		fmt.Printf("Combined scan targets: %d\n", len(scanTargets))
-		fmt.Printf("Active HTTP services: %d\n", len(liveURLs))
-		fmt.Printf("Open TCP ports: %d\n", len(portResults))
-		fmt.Printf("Potential honeypots: %d\n", countHoneypotAssets(assets))
-		fmt.Printf("Results written to: %s/\n", pm.BaseDir)
+		fmt.Printf("Scan ID: %s\n", result.PathManager.ScanID)
+		fmt.Printf("Domains loaded: %d\n", len(result.Domains))
+		fmt.Printf("Direct IP targets loaded: %d\n", len(result.DirectHosts))
+		fmt.Printf("Resolved domain assets: %d\n", len(result.ResolvedSubdomains))
+		fmt.Printf("Combined scan targets: %d\n", len(result.ScanTargets))
+		fmt.Printf("Active HTTP services: %d\n", len(result.ProbeResults))
+		fmt.Printf("Open TCP ports: %d\n", len(result.PortResults))
+		fmt.Printf("Potential honeypots: %d\n", countHoneypotAssets(result.Assets))
+		fmt.Printf("Results written to: %s/\n", result.PathManager.BaseDir)
 
 		return nil
 	},
@@ -529,4 +357,217 @@ func countHoneypotAssets(assets []storage.AssetRecord) int {
 		}
 	}
 	return count
+}
+
+func runBatchPipeline(ctx context.Context, opts batchRunOptions) (*batchRunResult, error) {
+	domains, err := readLines(opts.DomainsFile)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to read domains file: %w", err)
+	}
+	directTargets, err := readDirectIPTargets(opts.IPsFile)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to read IP targets file: %w", err)
+	}
+	if len(domains) == 0 && len(directTargets) == 0 {
+		return nil, fmt.Errorf("no targets loaded from %s or %s", opts.DomainsFile, opts.IPsFile)
+	}
+
+	targetName := opts.Name
+	if targetName == "" {
+		targetName = "batch-targets"
+	}
+	pm, err := output.NewPathManager(targetName, OutputDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize output manager: %w", err)
+	}
+	if err := pm.InitDirectories(); err != nil {
+		return nil, fmt.Errorf("failed to create output directory: %w", err)
+	}
+	logx.Log.Info().Str("scan_id", pm.ScanID).Msg("Batch scan session directories initialized")
+
+	resolvers := dns.EffectiveResolvers(Cfg.DNS.ResolverMode, Cfg.DNS.Resolvers, nil, Cfg.DNS.FallbackPublicResolvers)
+	passive.Configure(Cfg)
+
+	var discovery *scanpkg.DiscoveryResult
+	if len(domains) > 0 {
+		inScope := buildBatchScope(domains)
+		settings := scanpkg.ResolveDiscoverySettings(opts.Mode, Cfg, false, false, Cfg.Scan.MaxDepth)
+		discovery, err = scanpkg.DiscoverAssets(ctx, Cfg, scanpkg.DiscoveryOptions{
+			InScope:   inScope,
+			Mode:      opts.Mode,
+			Wordlist:  Cfg.Enum.Wordlist,
+			Resolvers: resolvers,
+			RateLimit: Cfg.Scan.RateLimitPerSecond,
+			Settings:  settings,
+		})
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		discovery = &scanpkg.DiscoveryResult{}
+	}
+
+	resolvedSubdomains := discovery.ResolvedSubdomains
+	wildcardSubdomains := discovery.WildcardSubdomains
+	cnames := discovery.CNAMEs
+	finalDNSResults := discovery.DNSResults
+	allSubs := discovery.AllSubdomains
+	candidateSubs := discovery.CandidateSubdomains
+
+	if len(allSubs) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("all_subdomains.txt"), allSubs)
+	}
+	if len(candidateSubs) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("candidate_subdomains.txt"), candidateSubs)
+	}
+	if len(resolvedSubdomains) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("resolved_subdomains.txt"), resolvedSubdomains)
+	}
+	if len(wildcardSubdomains) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("wildcard_subdomains.txt"), wildcardSubdomains)
+	}
+	if len(cnames) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("cnames.txt"), cnames)
+	}
+
+	scanTargets := scanpkg.BuildPortScanTargets(resolvedSubdomains, finalDNSResults)
+	explicitPorts := make(map[int]struct{})
+	directHostSet := make(map[string]struct{})
+	for _, target := range directTargets {
+		scanTargets = append(scanTargets, portscan.ScanTarget{Domain: target.Host, Address: target.Host})
+		directHostSet[target.Host] = struct{}{}
+		if target.ExplicitPort > 0 {
+			explicitPorts[target.ExplicitPort] = struct{}{}
+		}
+	}
+	scanTargets = dedupeScanTargets(scanTargets)
+
+	var directHosts []string
+	for host := range directHostSet {
+		directHosts = append(directHosts, host)
+	}
+	sort.Strings(directHosts)
+	if len(directHosts) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("direct_ips.txt"), directHosts)
+	}
+
+	probeInputs := dedupeStrings(append(append([]string{}, resolvedSubdomains...), directHosts...))
+	if lines := scanTargetStrings(scanTargets); len(lines) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("combined_targets.txt"), lines)
+	}
+
+	scanPorts := batchPorts(opts.Profile, explicitPorts)
+	httpPorts := batchHTTPPorts(explicitPorts)
+
+	var probeResults []httpprobe.ProbeResult
+	var liveURLs []string
+	var interestingURLs []string
+	var honeypotURLs []string
+	if Cfg.HTTP.Enabled && len(probeInputs) > 0 {
+		logx.Log.Info().Int("count", len(probeInputs)).Msg("Running automated HTTP/HTTPS probing...")
+		prober := httpprobe.NewProber(
+			httpPorts,
+			Cfg.Scan.Threads,
+			Cfg.Scan.RateLimitPerSecond,
+			Cfg.HTTP.TimeoutSeconds,
+			Cfg.HTTP.FollowRedirects,
+			Cfg.HTTP.MaxRedirects,
+			resolvers,
+		)
+		probeResults = prober.ProbeBatch(ctx, probeInputs)
+		for _, res := range probeResults {
+			liveURLs = append(liveURLs, res.URL)
+			if res.IsInteresting {
+				interestingURLs = append(interestingURLs, fmt.Sprintf("%s [%d] (%s) -> %s", res.URL, res.StatusCode, res.Title, res.InterestingReason))
+			}
+			if res.PotentialHoneypot {
+				honeypotURLs = append(honeypotURLs, fmt.Sprintf("%s [%d] -> %s", res.URL, res.StatusCode, res.HoneypotReason))
+			}
+		}
+		_ = output.WriteLines(pm.GetFilePath("live_urls.txt"), liveURLs)
+		if len(interestingURLs) > 0 {
+			_ = output.WriteLines(pm.GetFilePath("interesting_urls.txt"), interestingURLs)
+		}
+		if len(honeypotURLs) > 0 {
+			_ = output.WriteLines(pm.GetFilePath("honeypot_urls.txt"), honeypotURLs)
+		}
+		if data, err := json.MarshalIndent(probeResults, "", "  "); err == nil {
+			_ = os.WriteFile(pm.GetFilePath("http_responses.json"), data, 0644)
+		}
+	}
+
+	var portResults []portscan.PortResult
+	var openPortLines []string
+	var honeypotPortLines []string
+	if len(scanTargets) > 0 {
+		logx.Log.Info().Int("count", len(scanTargets)).Msg("Running automated TCP port analysis...")
+		scanner := portscan.NewPortScanner(
+			Cfg.PortScan.Workers,
+			Cfg.PortScan.RateLimitPerSecond,
+			Cfg.PortScan.TimeoutSeconds,
+		)
+		portResults = scanner.ScanResolvedBatch(ctx, scanTargets, scanPorts)
+		for _, res := range portResults {
+			endpoint := res.Domain
+			if res.Address != "" && res.Address != res.Domain {
+				endpoint = fmt.Sprintf("%s [%s]", res.Domain, res.Address)
+			}
+			line := fmt.Sprintf("%s:%d (%s)", endpoint, res.Port, res.Service)
+			if res.Product != "" {
+				line += fmt.Sprintf(" | Product: %s", res.Product)
+				if res.Version != "" {
+					line += " " + res.Version
+				}
+			}
+			if res.Banner != "" {
+				clean := strings.ReplaceAll(res.Banner, "\n", " ")
+				clean = strings.ReplaceAll(clean, "\r", " ")
+				if len(clean) > 40 {
+					clean = clean[:40] + "..."
+				}
+				line += fmt.Sprintf(" | Banner: %s", clean)
+			}
+			openPortLines = append(openPortLines, line)
+			if res.PotentialHoneypot {
+				honeypotPortLines = append(honeypotPortLines, fmt.Sprintf("%s:%d (%s) -> %s", endpoint, res.Port, res.Service, res.HoneypotReason))
+			}
+		}
+		_ = output.WriteLines(pm.GetFilePath("open_ports.txt"), openPortLines)
+		if len(honeypotPortLines) > 0 {
+			_ = output.WriteLines(pm.GetFilePath("honeypot_ports.txt"), honeypotPortLines)
+		}
+		if data, err := json.MarshalIndent(portResults, "", "  "); err == nil {
+			_ = os.WriteFile(pm.GetFilePath("portscan_results.json"), data, 0644)
+		}
+	}
+
+	assets := buildBatchAssets(resolvedSubdomains, finalDNSResults, directHosts, probeResults, portResults)
+	db, err := storage.NewBoltDB(Cfg.Storage.Path)
+	if err == nil {
+		defer db.Close()
+		_ = db.SaveScan(pm.ScanID, targetName, opts.Mode)
+		for _, asset := range assets {
+			_ = db.SaveAsset(pm.ScanID, asset)
+		}
+	}
+
+	_ = report.ExportJSON(pm.GetFilePath("report.json"), assets)
+	_ = report.ExportYAML(pm.GetFilePath("report.yaml"), assets)
+	_ = report.ExportCSV(pm.GetFilePath("report.csv"), assets)
+	_ = report.ExportTXT(pm.GetFilePath("report.txt"), targetName, pm.ScanID, assets)
+	_ = report.ExportHTML(pm.GetFilePath("report.html"), targetName, pm.ScanID, assets)
+
+	return &batchRunResult{
+		PathManager:         pm,
+		Domains:             domains,
+		DirectHosts:         directHosts,
+		ResolvedSubdomains:  resolvedSubdomains,
+		WildcardSubdomains:  wildcardSubdomains,
+		AllSubdomains:       allSubs,
+		CandidateSubdomains: candidateSubs,
+		ScanTargets:         scanTargets,
+		ProbeResults:        probeResults,
+		PortResults:         portResults,
+		Assets:              assets,
+	}, nil
 }
