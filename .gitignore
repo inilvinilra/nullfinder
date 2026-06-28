@@ -1,0 +1,34 @@
+# NullFinder Git Ignore File
+
+# Binaries and build outputs
+/bin/
+/dist/
+/benchmark/
+/results/
+nullfinder
+nullfinder-linux-*
+nullfinder-darwin-*
+
+# Local configuration and environment variables
+.env
+.env.local
+.env.*.local
+
+# Results and local DBs
+nullfinder.db
+nullfinder.db.lock
+
+# Test and coverage profiles
+*.out
+*.test
+*.prof
+
+# IDEs and OS files
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+.DS_Store

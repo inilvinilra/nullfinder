@@ -1,0 +1,163 @@
+# NullFinder configuration example yaml
+
+mode: hybrid # Options: local, passive, hybrid, full
+
+scan:
+  default_profile: web
+  threads: 25
+  timeout_seconds: 10
+  rate_limit_per_second: 25
+  safe_only: true
+  max_depth: 1
+
+enum:
+  local_wordlist_enabled: true
+  local_permutation_enabled: false
+  max_permutations_per_domain: 5000
+  wordlist: wordlists/small.txt
+
+providers:
+  crtsh:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+  webarchive:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+  securitytrails:
+    enabled: false
+    requires_api_key: true
+    api_key_env: SECURITYTRAILS_API_KEY
+    timeout_seconds: 20
+
+  censys:
+    enabled: false
+    requires_api_key: true
+    api_id_env: CENSYS_API_ID
+    api_secret_env: CENSYS_API_SECRET
+    timeout_seconds: 20
+
+  shodan:
+    enabled: false
+    requires_api_key: true
+    api_key_env: SHODAN_API_KEY
+    timeout_seconds: 20
+
+  hackertarget:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+  anubis:
+    enabled: false
+    requires_api_key: false
+    timeout_seconds: 20
+
+  alienvault:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+  threatcrowd:
+    enabled: false
+    requires_api_key: false
+    timeout_seconds: 20
+
+  certspotter:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+  urlscan:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+  commoncrawl:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+  rapiddns:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+  thc:
+    enabled: true
+    requires_api_key: false
+    timeout_seconds: 20
+
+dns:
+  resolver_mode: mixed # Options: system, custom, mixed
+  fallback_public_resolvers: true
+  timeout_seconds: 5
+  retries: 2
+  wildcard_detection: true
+  resolvers:
+    - 1.1.1.1
+    - 8.8.8.8
+    - 9.9.9.9
+
+http:
+  enabled: true
+  timeout_seconds: 10
+  follow_redirects: true
+  max_redirects: 5
+  max_body_bytes: 1048576
+  ports:
+    - 80
+    - 443
+    - 8080
+    - 8443
+    - 8000
+    - 3000
+    - 5000
+
+portscan:
+  enabled: false
+  profile: web
+  timeout_seconds: 3
+  workers: 100
+  rate_limit_per_second: 100
+  web_ports:
+    - 80
+    - 443
+    - 8080
+    - 8443
+    - 8000
+    - 3000
+    - 5000
+  common_ports:
+    - 21
+    - 22
+    - 25
+    - 53
+    - 80
+    - 110
+    - 143
+    - 443
+    - 465
+    - 587
+    - 993
+    - 995
+    - 3306
+    - 5432
+    - 6379
+    - 8080
+    - 8443
+    - 9200
+
+output:
+  formats:
+    - txt
+    - json
+    - csv
+    - html
+
+storage:
+  type: bbolt
+  path: nullfinder.db
