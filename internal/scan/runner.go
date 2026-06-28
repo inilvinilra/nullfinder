@@ -79,6 +79,7 @@ func RunScan(ctx context.Context, cfg *config.Config, opts RunScanOptions) error
 	// 5. HTTP Probing
 	var liveURLs []string
 	var interestingURLs []string
+	var honeypotURLs []string
 	var probeResults []httpprobe.ProbeResult
 
 	if cfg.HTTP.Enabled {
@@ -98,11 +99,17 @@ func RunScan(ctx context.Context, cfg *config.Config, opts RunScanOptions) error
 			if res.IsInteresting {
 				interestingURLs = append(interestingURLs, fmt.Sprintf("%s [%d] (%s) -> %s", res.URL, res.StatusCode, res.Title, res.InterestingReason))
 			}
+			if res.PotentialHoneypot {
+				honeypotURLs = append(honeypotURLs, fmt.Sprintf("%s [%d] -> %s", res.URL, res.StatusCode, res.HoneypotReason))
+			}
 		}
 
 		_ = output.WriteLines(pm.GetFilePath("live_urls.txt"), liveURLs)
 		if len(interestingURLs) > 0 {
 			_ = output.WriteLines(pm.GetFilePath("interesting_urls.txt"), interestingURLs)
+		}
+		if len(honeypotURLs) > 0 {
+			_ = output.WriteLines(pm.GetFilePath("honeypot_urls.txt"), honeypotURLs)
 		}
 		jsonData, err := json.MarshalIndent(probeResults, "", "  ")
 		if err == nil {
@@ -113,6 +120,7 @@ func RunScan(ctx context.Context, cfg *config.Config, opts RunScanOptions) error
 	// 6. TCP Port Scanning
 	var portscanResults []portscan.PortResult
 	var openPortsLines []string
+	var honeypotPortsLines []string
 
 	if cfg.PortScan.Enabled || opts.Mode == "full" {
 		logx.Log.Info().Int("count", len(resolvedSubdomains)).Msg("Running safe TCP port scan...")
@@ -153,9 +161,15 @@ func RunScan(ctx context.Context, cfg *config.Config, opts RunScanOptions) error
 				bannerSnippet = fmt.Sprintf(" | Banner: %s", cleanBanner)
 			}
 			openPortsLines = append(openPortsLines, fmt.Sprintf("%s:%d (%s)%s%s", endpoint, r.Port, r.Service, productSnippet, bannerSnippet))
+			if r.PotentialHoneypot {
+				honeypotPortsLines = append(honeypotPortsLines, fmt.Sprintf("%s:%d (%s) -> %s", endpoint, r.Port, r.Service, r.HoneypotReason))
+			}
 		}
 
 		_ = output.WriteLines(pm.GetFilePath("open_ports.txt"), openPortsLines)
+		if len(honeypotPortsLines) > 0 {
+			_ = output.WriteLines(pm.GetFilePath("honeypot_ports.txt"), honeypotPortsLines)
+		}
 		jsonData, err := json.MarshalIndent(portscanResults, "", "  ")
 		if err == nil {
 			_ = os.WriteFile(pm.GetFilePath("portscan_results.json"), jsonData, 0644)
@@ -192,10 +206,16 @@ func RunScan(ctx context.Context, cfg *config.Config, opts RunScanOptions) error
 		var tlsExpiries []string
 		var isInteresting bool
 		var interestingReason string
+		var isHoneypot bool
+		var honeypotReason string
 
 		for _, pRes := range portscanResults {
 			if pRes.Domain == sub {
 				ports = append(ports, pRes.Port)
+				if pRes.PotentialHoneypot {
+					isHoneypot = true
+					honeypotReason = joinReason(honeypotReason, pRes.HoneypotReason)
+				}
 			}
 		}
 
@@ -237,6 +257,10 @@ func RunScan(ctx context.Context, cfg *config.Config, opts RunScanOptions) error
 					isInteresting = true
 					interestingReason = hRes.InterestingReason
 				}
+				if hRes.PotentialHoneypot {
+					isHoneypot = true
+					honeypotReason = joinReason(honeypotReason, hRes.HoneypotReason)
+				}
 			}
 		}
 
@@ -259,6 +283,8 @@ func RunScan(ctx context.Context, cfg *config.Config, opts RunScanOptions) error
 			TLSExpiries:       tlsExpiries,
 			IsInteresting:     isInteresting,
 			InterestingReason: interestingReason,
+			PotentialHoneypot: isHoneypot,
+			HoneypotReason:    honeypotReason,
 		})
 	}
 
@@ -310,4 +336,14 @@ func dedupeStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func joinReason(existing, next string) string {
+	if existing == "" {
+		return next
+	}
+	if next == "" || existing == next {
+		return existing
+	}
+	return existing + "; " + next
 }

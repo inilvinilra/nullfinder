@@ -705,6 +705,7 @@
                     const ips = (a.ips || []).map(ip => `<span class="tag">${ip}</span>`).join('');
                     const cnames = (a.cnames || []).map(cn => `<span class="tag" style="background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); color: var(--text-secondary);">${cn}</span>`).join('');
                     const interesting = a.is_interesting ? `<span class="tag tag-interesting">INTERESTING: ${a.interesting_reason || 'General'}</span>` : '';
+                    const honeypot = a.potential_honeypot ? `<span class="tag" style="background: rgba(249,115,22,0.12); border-color: rgba(249,115,22,0.3); color: #fb923c;">POTENTIAL HONEYPOT: ${a.honeypot_reason || 'Signal match'}</span>` : '';
                     return `
                         <div class="asset-list-item">
                             <div class="asset-header">
@@ -720,7 +721,7 @@
                                     <div>${cnames || '<span style="color: var(--text-secondary);">None</span>'}</div>
                                 </div>
                             </div>
-                            ${interesting ? `<div style="margin-top: 0.5rem;">${interesting}</div>` : ''}
+                            ${(interesting || honeypot) ? `<div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">${interesting}${honeypot}</div>` : ''}
                         </div>
                     `;
                 }).join('');
@@ -753,6 +754,7 @@
                                         <div>${server}</div>
                                     </div>
                                 </div>
+                                ${a.potential_honeypot ? `<div style="margin-top: 0.5rem;"><span class="tag" style="background: rgba(249,115,22,0.12); border-color: rgba(249,115,22,0.3); color: #fb923c;">POTENTIAL HONEYPOT: ${a.honeypot_reason || 'Signal match'}</span></div>` : ''}
                             </div>
                         `;
                     }).join('');

@@ -91,6 +91,7 @@ var portsCmd = &cobra.Command{
 		results := scanner.ScanResolvedBatch(ctx, targets, ports)
 
 		var openLines []string
+		var honeypotLines []string
 		for _, r := range results {
 			bannerSnippet := ""
 			productSnippet := ""
@@ -113,11 +114,19 @@ var portsCmd = &cobra.Command{
 				bannerSnippet = fmt.Sprintf(" | Banner: %s", cleanBanner)
 			}
 			openLines = append(openLines, fmt.Sprintf("%s:%d (%s)%s%s", endpoint, r.Port, r.Service, productSnippet, bannerSnippet))
+			if r.PotentialHoneypot {
+				honeypotLines = append(honeypotLines, fmt.Sprintf("%s:%d (%s) -> %s", endpoint, r.Port, r.Service, r.HoneypotReason))
+			}
 		}
 
 		// Write results to files
 		if err := output.WriteLines(pm.GetFilePath("open_ports.txt"), openLines); err != nil {
 			logx.Log.Error().Err(err).Msg("Failed to write open_ports.txt")
+		}
+		if len(honeypotLines) > 0 {
+			if err := output.WriteLines(pm.GetFilePath("honeypot_ports.txt"), honeypotLines); err != nil {
+				logx.Log.Error().Err(err).Msg("Failed to write honeypot_ports.txt")
+			}
 		}
 
 		jsonData, err := json.MarshalIndent(results, "", "  ")
@@ -132,6 +141,7 @@ var portsCmd = &cobra.Command{
 		fmt.Printf("Scan ID: %s\n", pm.ScanID)
 		fmt.Printf("Total targets scanned: %d\n", len(targets))
 		fmt.Printf("Open TCP ports discovered: %d\n", len(results))
+		fmt.Printf("Potential honeypot ports detected: %d\n", len(honeypotLines))
 		fmt.Printf("Results written to: %s/\n", pm.BaseDir)
 
 		return nil

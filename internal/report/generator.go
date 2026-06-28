@@ -60,6 +60,8 @@ func ExportCSV(filePath string, assets []storage.AssetRecord) error {
 		"TLSExpiries",
 		"IsInteresting",
 		"InterestingReason",
+		"PotentialHoneypot",
+		"HoneypotReason",
 	})
 	if err != nil {
 		return err
@@ -112,6 +114,8 @@ func ExportCSV(filePath string, assets []storage.AssetRecord) error {
 			tlsExpiries,
 			strconv.FormatBool(a.IsInteresting),
 			a.InterestingReason,
+			strconv.FormatBool(a.PotentialHoneypot),
+			a.HoneypotReason,
 		})
 		if err != nil {
 			return err
@@ -142,6 +146,7 @@ func ExportTXT(filePath string, targetDomain string, scanID string, assets []sto
 	fmt.Fprintf(file, "Web Endpoints: %d\n", summary.UniqueWebEndpoints)
 	fmt.Fprintf(file, "Technologies:  %d\n", summary.UniqueTechnologies)
 	fmt.Fprintf(file, "Interesting:   %d\n\n", summary.InterestingAssets)
+	fmt.Fprintf(file, "Honeypots:     %d\n\n", summary.PotentialHoneypots)
 
 	if len(summary.TopTechnologies) > 0 {
 		fmt.Fprintln(file, "Top Technologies:")
@@ -175,6 +180,30 @@ func ExportTXT(filePath string, targetDomain string, scanID string, assets []sto
 		fmt.Fprintln(file)
 	}
 
+	var honeypots []storage.AssetRecord
+	for _, a := range assets {
+		if a.PotentialHoneypot {
+			honeypots = append(honeypots, a)
+		}
+	}
+
+	fmt.Fprintf(file, "=== Potential Honeypots (%d) ===\n", len(honeypots))
+	for _, a := range honeypots {
+		fmt.Fprintf(file, "- Domain: %s\n", a.Domain)
+		if len(a.IPs) > 0 {
+			fmt.Fprintf(file, "  IPs:    %s\n", strings.Join(a.IPs, ", "))
+		}
+		if len(a.Ports) > 0 {
+			var ports []string
+			for _, p := range a.Ports {
+				ports = append(ports, strconv.Itoa(p))
+			}
+			fmt.Fprintf(file, "  Ports:  %s\n", strings.Join(ports, ", "))
+		}
+		fmt.Fprintf(file, "  Reason: %s\n", a.HoneypotReason)
+		fmt.Fprintln(file)
+	}
+
 	fmt.Fprintf(file, "=== All Discovered Subdomains (%d) ===\n", len(assets))
 	for _, a := range assets {
 		cnameInfo := ""
@@ -191,6 +220,9 @@ func ExportTXT(filePath string, targetDomain string, scanID string, assets []sto
 				pStr = append(pStr, strconv.Itoa(p))
 			}
 			fmt.Fprintf(file, "  Ports:  %s\n", strings.Join(pStr, ", "))
+		}
+		if a.PotentialHoneypot {
+			fmt.Fprintf(file, "  Honeypot: %s\n", a.HoneypotReason)
 		}
 	}
 

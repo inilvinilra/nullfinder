@@ -84,11 +84,15 @@ var httpCmd = &cobra.Command{
 
 		var liveURLs []string
 		var interestingURLs []string
+		var honeypotURLs []string
 
 		for _, res := range results {
 			liveURLs = append(liveURLs, res.URL)
 			if res.IsInteresting {
 				interestingURLs = append(interestingURLs, fmt.Sprintf("%s [%d] (%s) -> %s", res.URL, res.StatusCode, res.Title, res.InterestingReason))
+			}
+			if res.PotentialHoneypot {
+				honeypotURLs = append(honeypotURLs, fmt.Sprintf("%s [%d] -> %s", res.URL, res.StatusCode, res.HoneypotReason))
 			}
 		}
 
@@ -100,6 +104,11 @@ var httpCmd = &cobra.Command{
 		if len(interestingURLs) > 0 {
 			if err := output.WriteLines(pm.GetFilePath("interesting_urls.txt"), interestingURLs); err != nil {
 				logx.Log.Error().Err(err).Msg("Failed to write interesting_urls.txt")
+			}
+		}
+		if len(honeypotURLs) > 0 {
+			if err := output.WriteLines(pm.GetFilePath("honeypot_urls.txt"), honeypotURLs); err != nil {
+				logx.Log.Error().Err(err).Msg("Failed to write honeypot_urls.txt")
 			}
 		}
 
@@ -117,6 +126,7 @@ var httpCmd = &cobra.Command{
 		fmt.Printf("Total targets probed: %d\n", len(lines))
 		fmt.Printf("Active web services discovered: %d\n", len(liveURLs))
 		fmt.Printf("Interesting web interfaces flagged: %d\n", len(interestingURLs))
+		fmt.Printf("Potential honeypots detected: %d\n", len(honeypotURLs))
 		fmt.Printf("Results written to: %s/\n", pm.BaseDir)
 
 		return nil

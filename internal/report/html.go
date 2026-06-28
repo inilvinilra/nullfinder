@@ -2,22 +2,23 @@ package report
 
 import (
 	"html/template"
-	"os"
 	"nullfinder/internal/storage"
+	"os"
 	"time"
 )
 
 // HTMLReportData aggregates properties for HTML template binding.
 type HTMLReportData struct {
-	TargetDomain      string
-	ScanID            string
-	Timestamp         string
-	TotalSubdomains   int
-	ActiveWebServices int
-	FlaggedAssets     int
-	OpenPortsCount    int
-	Summary           ReportSummary
-	Assets            []storage.AssetRecord
+	TargetDomain       string
+	ScanID             string
+	Timestamp          string
+	TotalSubdomains    int
+	ActiveWebServices  int
+	FlaggedAssets      int
+	PotentialHoneypots int
+	OpenPortsCount     int
+	Summary            ReportSummary
+	Assets             []storage.AssetRecord
 }
 
 const htmlTemplate = `<!DOCTYPE html>
@@ -124,6 +125,10 @@ const htmlTemplate = `<!DOCTYPE html>
 
         .stat-card.interesting .value {
             color: var(--warning);
+        }
+
+        .stat-card.honeypot .value {
+            color: #f97316;
         }
 
         .stat-card.score .value {
@@ -328,6 +333,10 @@ const htmlTemplate = `<!DOCTYPE html>
             <h3>Interesting Interfaces</h3>
             <div class="value">{{.FlaggedAssets}}</div>
         </div>
+        <div class="stat-card honeypot">
+            <h3>Potential Honeypots</h3>
+            <div class="value">{{.PotentialHoneypots}}</div>
+        </div>
         <div class="stat-card">
             <h3>Open TCP Ports</h3>
             <div class="value">{{.OpenPortsCount}}</div>
@@ -356,6 +365,7 @@ const htmlTemplate = `<!DOCTYPE html>
                     <span class="chip">{{.Summary.UniqueServers}} servers</span>
                     <span class="chip">{{.Summary.UniqueTitles}} titles</span>
                     <span class="chip">{{.Summary.InterestingAssets}} flagged assets</span>
+                    <span class="chip">{{.Summary.PotentialHoneypots}} honeypots</span>
                 </div>
             </div>
             <div class="summary-block">
@@ -395,6 +405,11 @@ const htmlTemplate = `<!DOCTYPE html>
                         {{if .IsInteresting}}
                         <div style="margin-top: 0.25rem;">
                             <span class="interesting-badge" title="{{.InterestingReason}}">Interesting</span>
+                        </div>
+                        {{end}}
+                        {{if .PotentialHoneypot}}
+                        <div style="margin-top: 0.25rem;">
+                            <span class="interesting-badge" style="background: rgba(249, 115, 22, 0.18); color: #fb923c; border-color: rgba(249, 115, 22, 0.35);" title="{{.HoneypotReason}}">Potential Honeypot</span>
                         </div>
                         {{end}}
                     </td>
@@ -476,6 +491,7 @@ func ExportHTML(filePath string, targetDomain string, scanID string, assets []st
 	totalSubs := len(assets)
 	activeWeb := 0
 	flagged := 0
+	honeypots := 0
 	openPorts := 0
 
 	for _, a := range assets {
@@ -485,19 +501,23 @@ func ExportHTML(filePath string, targetDomain string, scanID string, assets []st
 		if a.IsInteresting {
 			flagged++
 		}
+		if a.PotentialHoneypot {
+			honeypots++
+		}
 		openPorts += len(a.Ports)
 	}
 
 	data := HTMLReportData{
-		TargetDomain:      targetDomain,
-		ScanID:            scanID,
-		Timestamp:         time.Now().Format("2006-01-02 15:04:05 MST"),
-		TotalSubdomains:   totalSubs,
-		ActiveWebServices: activeWeb,
-		FlaggedAssets:     flagged,
-		OpenPortsCount:    openPorts,
-		Summary:           BuildSummary(assets),
-		Assets:            assets,
+		TargetDomain:       targetDomain,
+		ScanID:             scanID,
+		Timestamp:          time.Now().Format("2006-01-02 15:04:05 MST"),
+		TotalSubdomains:    totalSubs,
+		ActiveWebServices:  activeWeb,
+		FlaggedAssets:      flagged,
+		PotentialHoneypots: honeypots,
+		OpenPortsCount:     openPorts,
+		Summary:            BuildSummary(assets),
+		Assets:             assets,
 	}
 
 	tmpl, err := template.New("dashboard").Parse(htmlTemplate)

@@ -9,20 +9,24 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"nullfinder/internal/detect"
 )
 
 // PortResult represents an audit finding of a targeted port.
 type PortResult struct {
-	Domain  string `json:"domain,omitempty"`
-	Address string `json:"address,omitempty"`
-	IP      string `json:"ip"`
-	Port    int    `json:"port"`
-	State   string `json:"state"` // "open", "closed", or "filtered"
-	Reason  string `json:"reason,omitempty"`
-	Service string `json:"service"`
-	Product string `json:"product,omitempty"`
-	Version string `json:"version,omitempty"`
-	Banner  string `json:"banner,omitempty"`
+	Domain            string `json:"domain,omitempty"`
+	Address           string `json:"address,omitempty"`
+	IP                string `json:"ip"`
+	Port              int    `json:"port"`
+	State             string `json:"state"` // "open", "closed", or "filtered"
+	Reason            string `json:"reason,omitempty"`
+	Service           string `json:"service"`
+	Product           string `json:"product,omitempty"`
+	Version           string `json:"version,omitempty"`
+	Banner            string `json:"banner,omitempty"`
+	PotentialHoneypot bool   `json:"potential_honeypot"`
+	HoneypotReason    string `json:"honeypot_reason,omitempty"`
 }
 
 // PortScanner coordinates parallel TCP audits on multiple hosts.
@@ -159,18 +163,21 @@ func (ps *PortScanner) ScanSingle(ctx context.Context, target ScanTarget, port i
 	if fp.Service == "" {
 		fp.Service = IdentifyService(port, fp.Banner)
 	}
+	honeypot, honeypotReason := detect.DetectPotentialHoneypotWithContext(port, fp.Service, fp.Banner, fp.Product)
 
 	return &PortResult{
-		Domain:  target.Domain,
-		Address: target.Address,
-		IP:      ip,
-		Port:    port,
-		State:   "open",
-		Reason:  "connect_success",
-		Service: fp.Service,
-		Product: fp.Product,
-		Version: fp.Version,
-		Banner:  fp.Banner,
+		Domain:            target.Domain,
+		Address:           target.Address,
+		IP:                ip,
+		Port:              port,
+		State:             "open",
+		Reason:            "connect_success",
+		Service:           fp.Service,
+		Product:           fp.Product,
+		Version:           fp.Version,
+		Banner:            fp.Banner,
+		PotentialHoneypot: honeypot,
+		HoneypotReason:    honeypotReason,
 	}
 }
 

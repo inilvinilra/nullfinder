@@ -247,6 +247,7 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 		// 5. HTTP Probing
 		var liveURLs []string
 		var interestingURLs []string
+		var honeypotURLs []string
 		var probeResults []httpprobe.ProbeResult
 
 		httpEnabled := Cfg.HTTP.Enabled
@@ -273,6 +274,9 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 				if res.IsInteresting {
 					interestingURLs = append(interestingURLs, fmt.Sprintf("%s [%d] (%s) -> %s", res.URL, res.StatusCode, res.Title, res.InterestingReason))
 				}
+				if res.PotentialHoneypot {
+					honeypotURLs = append(honeypotURLs, fmt.Sprintf("%s [%d] -> %s", res.URL, res.StatusCode, res.HoneypotReason))
+				}
 			}
 
 			if err := output.WriteLines(pm.GetFilePath("live_urls.txt"), liveURLs); err != nil {
@@ -281,6 +285,11 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 			if len(interestingURLs) > 0 {
 				if err := output.WriteLines(pm.GetFilePath("interesting_urls.txt"), interestingURLs); err != nil {
 					logx.Log.Error().Err(err).Msg("Failed to write interesting_urls.txt")
+				}
+			}
+			if len(honeypotURLs) > 0 {
+				if err := output.WriteLines(pm.GetFilePath("honeypot_urls.txt"), honeypotURLs); err != nil {
+					logx.Log.Error().Err(err).Msg("Failed to write honeypot_urls.txt")
 				}
 			}
 			jsonData, err := json.MarshalIndent(probeResults, "", "  ")
@@ -293,6 +302,7 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 		// 6. TCP Port Scanning
 		var portscanResults []portscan.PortResult
 		var openPortsLines []string
+		var honeypotPortsLines []string
 
 		portsEnabled := Cfg.PortScan.Enabled
 		if cmd.Flags().Changed("ports") {
@@ -341,10 +351,18 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 					bannerSnippet = fmt.Sprintf(" | Banner: %s", cleanBanner)
 				}
 				openPortsLines = append(openPortsLines, fmt.Sprintf("%s:%d (%s)%s%s", endpoint, r.Port, r.Service, productSnippet, bannerSnippet))
+				if r.PotentialHoneypot {
+					honeypotPortsLines = append(honeypotPortsLines, fmt.Sprintf("%s:%d (%s) -> %s", endpoint, r.Port, r.Service, r.HoneypotReason))
+				}
 			}
 
 			if err := output.WriteLines(pm.GetFilePath("open_ports.txt"), openPortsLines); err != nil {
 				logx.Log.Error().Err(err).Msg("Failed to write open_ports.txt")
+			}
+			if len(honeypotPortsLines) > 0 {
+				if err := output.WriteLines(pm.GetFilePath("honeypot_ports.txt"), honeypotPortsLines); err != nil {
+					logx.Log.Error().Err(err).Msg("Failed to write honeypot_ports.txt")
+				}
 			}
 
 			jsonData, err := json.MarshalIndent(portscanResults, "", "  ")
@@ -384,10 +402,16 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 			var tlsExpiries []string
 			var isInteresting bool
 			var interestingReason string
+			var isHoneypot bool
+			var honeypotReason string
 
 			for _, pRes := range portscanResults {
 				if pRes.Domain == sub {
 					ports = append(ports, pRes.Port)
+					if pRes.PotentialHoneypot {
+						isHoneypot = true
+						honeypotReason = joinReason(honeypotReason, pRes.HoneypotReason)
+					}
 				}
 			}
 
@@ -429,6 +453,10 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 						isInteresting = true
 						interestingReason = hRes.InterestingReason
 					}
+					if hRes.PotentialHoneypot {
+						isHoneypot = true
+						honeypotReason = joinReason(honeypotReason, hRes.HoneypotReason)
+					}
 				}
 			}
 
@@ -451,6 +479,8 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 				TLSExpiries:       tlsExpiries,
 				IsInteresting:     isInteresting,
 				InterestingReason: interestingReason,
+				PotentialHoneypot: isHoneypot,
+				HoneypotReason:    honeypotReason,
 			})
 		}
 
@@ -504,6 +534,7 @@ safe TCP port checking, vulnerability-free scoring, and full report writing.`,
 		if httpEnabled {
 			fmt.Printf("Active HTTP services: %d\n", len(liveURLs))
 			fmt.Printf("Interesting web interfaces: %d\n", len(interestingURLs))
+			fmt.Printf("Potential honeypots: %d\n", len(honeypotURLs))
 		}
 		if portsEnabled {
 			fmt.Printf("Open TCP ports: %d\n", len(portscanResults))
@@ -549,6 +580,16 @@ func init() {
 	scanCmd.Flags().BoolVar(&EnableTHC, "enable-thc", false, "enable thc provider")
 
 	RootCmd.AddCommand(scanCmd)
+}
+
+func joinReason(existing, next string) string {
+	if existing == "" {
+		return next
+	}
+	if next == "" || existing == next {
+		return existing
+	}
+	return existing + "; " + next
 }
 
 func dedupeStrings(values []string) []string {

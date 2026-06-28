@@ -19,6 +19,7 @@ type ReportSummary struct {
 	UniquePorts        int
 	UniqueWebEndpoints int
 	InterestingAssets  int
+	PotentialHoneypots int
 	UniqueTechnologies int
 	UniqueServers      int
 	UniqueTitles       int
@@ -41,6 +42,9 @@ func BuildSummary(assets []storage.AssetRecord) ReportSummary {
 	for _, a := range assets {
 		if a.IsInteresting {
 			summary.InterestingAssets++
+		}
+		if a.PotentialHoneypot {
+			summary.PotentialHoneypots++
 		}
 		for _, ip := range a.IPs {
 			if ip == "" {
@@ -95,6 +99,7 @@ func BuildSummary(assets []storage.AssetRecord) ReportSummary {
 	score += min(summary.UniqueWebEndpoints*3, 15)
 	score += min(summary.UniqueTechnologies*2, 10)
 	score += min(summary.InterestingAssets*5, 10)
+	score += min(summary.PotentialHoneypots*4, 10)
 	if score > 100 {
 		score = 100
 	}

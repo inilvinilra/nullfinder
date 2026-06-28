@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"nullfinder/internal/detect"
 	"nullfinder/internal/netutil"
 )
 
@@ -58,6 +59,8 @@ type ProbeResult struct {
 	TLSSubject            string            `json:"tls_subject,omitempty"`
 	IsInteresting         bool              `json:"is_interesting"`
 	InterestingReason     string            `json:"interesting_reason,omitempty"`
+	PotentialHoneypot     bool              `json:"potential_honeypot"`
+	HoneypotReason        string            `json:"honeypot_reason,omitempty"`
 }
 
 // Prober manages active HTTP probing workers and configurations.
@@ -199,9 +202,10 @@ func (p *Prober) ProbeSingle(ctx context.Context, scheme string, domain string, 
 		tlsExpiry = cert.NotAfter.Format("2006-01-02")
 	}
 
-	interesting, reason := IsInteresting(resp.StatusCode, title, headers)
-	finalURL := resp.Request.URL.String()
 	techs := DetectTechnologies(headers, bodyStr)
+	interesting, reason := IsInteresting(resp.StatusCode, title, headers)
+	honeypot, honeypotReason := detectPotentialHoneypotHTTP(port, title, headers, techs, resp.Request.URL.String())
+	finalURL := resp.Request.URL.String()
 	hasLoginForm := DetectLoginForm(bodyStr)
 	faviconHash := p.fetchFaviconHash(probeCtx, client, finalURL, headers["Content-Type"], resp.StatusCode, bodyStr)
 	csp := headers["Content-Security-Policy"]
@@ -232,7 +236,21 @@ func (p *Prober) ProbeSingle(ctx context.Context, scheme string, domain string, 
 		TLSSubject:            tlsSubject,
 		IsInteresting:         interesting,
 		InterestingReason:     reason,
+		PotentialHoneypot:     honeypot,
+		HoneypotReason:        honeypotReason,
 	}
+}
+
+func detectPotentialHoneypotHTTP(port int, title string, headers map[string]string, techs []string, finalURL string) (bool, string) {
+	var parts []string
+	parts = append(parts, title, finalURL)
+	for _, key := range []string{"Server", "X-Powered-By", "X-Generator", "X-Redirect-By", "WWW-Authenticate"} {
+		if value := headers[key]; value != "" {
+			parts = append(parts, value)
+		}
+	}
+	parts = append(parts, techs...)
+	return detect.DetectPotentialHoneypotWithContext(port, "", parts...)
 }
 
 func (p *Prober) fetchFaviconHash(ctx context.Context, client *http.Client, pageURL string, contentType string, statusCode int, body string) string {

@@ -36,6 +36,8 @@ type AssetRecord struct {
 	TLSExpiries       []string `json:"tls_expiries,omitempty"`
 	IsInteresting     bool     `json:"is_interesting"`
 	InterestingReason string   `json:"interesting_reason,omitempty"`
+	PotentialHoneypot bool     `json:"potential_honeypot"`
+	HoneypotReason    string   `json:"honeypot_reason,omitempty"`
 }
 
 // BoltDB coordinates transactional updates to local database buckets.

@@ -11,6 +11,7 @@ It performs subdomain discovery, DNS resolution, HTTP probing, conservative TCP 
 - DNS resolution with wildcard filtering
 - HTTP/HTTPS probing with redirects, TLS metadata, titles, headers, and technology hints
 - Safe TCP connect port scanning with banner fingerprinting
+- Honeypot detection based on service banners, headers, and protocol anomalies
 - HTML, JSON, CSV, and TXT reporting
 
 ## Requirements
