@@ -5,7 +5,7 @@
 /dist/
 /benchmark/
 /results/
-nullfinder
+/nullfinder
 nullfinder-linux-*
 nullfinder-darwin-*
 
