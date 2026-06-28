@@ -269,7 +269,7 @@ func recordProviderFailure(name string, err error) {
 	if cooldown := providerFailureCooldown(err, state.Failures); cooldown > 0 {
 		state.CooldownUntil = time.Now().Add(cooldown)
 		state.CooldownAnnounced = false
-		logx.Log.Info().
+		logx.Log.Debug().
 			Str("provider", name).
 			Str("cooldown", cooldown.String()).
 			Str("reason", summarizeProviderError(err)).
@@ -357,11 +357,7 @@ func logProviderCooldownOnce(name string, until time.Time) {
 }
 
 func logProviderFailure(name string, err error) {
-	event := logx.Log.Debug()
-	if !isRetryableProviderError(err) {
-		event = logx.Log.Info()
-	}
-	event.
+	logx.Log.Debug().
 		Str("provider", name).
 		Str("reason", summarizeProviderError(err)).
 		Msg("Passive provider unavailable, continuing")
