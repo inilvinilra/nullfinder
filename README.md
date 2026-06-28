@@ -68,6 +68,7 @@ export CENSYS_API_SECRET="..."
 ```bash
 nullfinder scan --domain example.com --mode hybrid
 nullfinder batch --domains-file targets/domains.txt --ips-file targets/ips.txt
+nullfinder batch --domains-file targets/domains.txt --ips-file targets/ips.txt --mode full --ports 80,443,8080,8443 --max-port-targets 1000
 nullfinder compare --domains-file targets/domains.txt --ips-file targets/ips.txt
 nullfinder enum --domain example.com --mode passive
 nullfinder dns --input subdomains.txt
@@ -82,6 +83,8 @@ Target list templates:
 - [targets/ips.txt](/home/null/Desktop/NıulFinder/scoperecon/targets/ips.txt)
 
 The `batch` command discovers assets from domains, forwards resolved IPs into HTTP and port analysis, merges direct IP targets, and writes a single combined report.
+
+For large target sets, prefer a narrow first pass with `--ports` or `--max-port-targets`. Full `common` port analysis over thousands of resolved IPs can take a long time because every target/port pair is tested with a safe TCP connect timeout.
 
 The `compare` command runs that same base pipeline first, then executes external tools in sequence. Subdomain tooling (`subfinder`, `assetfinder`, `amass`) is consolidated and verified before host-level comparison continues with `naabu`, `nmap`, `rustscan`, and optionally `masscan`.
 

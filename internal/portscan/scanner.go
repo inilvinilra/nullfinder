@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nullfinder/internal/detect"
@@ -31,10 +32,12 @@ type PortResult struct {
 
 // PortScanner coordinates parallel TCP audits on multiple hosts.
 type PortScanner struct {
-	workers       int
-	rateLimit     int
-	timeout       time.Duration
-	bannerTimeout time.Duration
+	workers          int
+	rateLimit        int
+	timeout          time.Duration
+	bannerTimeout    time.Duration
+	progressCallback func(completed int, total int, open int, elapsed time.Duration)
+	progressInterval time.Duration
 }
 
 // NewPortScanner constructs a PortScanner session.
@@ -51,6 +54,12 @@ func NewPortScanner(workers int, rateLimit int, timeoutSeconds int) *PortScanner
 		timeout:       time.Duration(timeoutSeconds) * time.Second,
 		bannerTimeout: 2 * time.Second,
 	}
+}
+
+// SetProgressCallback reports long-running scan progress at a fixed interval.
+func (ps *PortScanner) SetProgressCallback(callback func(completed int, total int, open int, elapsed time.Duration)) {
+	ps.progressCallback = callback
+	ps.progressInterval = 30 * time.Second
 }
 
 // ScanJob bundles a target address and port number.
@@ -79,9 +88,13 @@ func (ps *PortScanner) ScanResolvedBatch(ctx context.Context, targets []ScanTarg
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var results []PortResult
+	totalJobs := len(targets) * len(ports)
+	if totalJobs == 0 {
+		return results
+	}
 
 	// Fill job queue
-	jobs := make(chan ScanJob, len(targets)*len(ports))
+	jobs := make(chan ScanJob, totalJobs)
 	for _, t := range targets {
 		for _, p := range ports {
 			jobs <- ScanJob{Target: t, Port: p}
@@ -96,10 +109,42 @@ func (ps *PortScanner) ScanResolvedBatch(ctx context.Context, targets []ScanTarg
 		ticker = time.NewTicker(interval)
 		defer ticker.Stop()
 	}
+	var completedCount atomic.Int64
+	var openCount atomic.Int64
+	startedAt := time.Now()
+	progressDone := make(chan struct{})
+	if ps.progressCallback != nil {
+		interval := ps.progressInterval
+		if interval <= 0 {
+			interval = 30 * time.Second
+		}
+		ps.progressCallback(0, totalJobs, 0, 0)
+		progressTicker := time.NewTicker(interval)
+		defer progressTicker.Stop()
+		go func() {
+			for {
+				select {
+				case <-progressTicker.C:
+					ps.progressCallback(
+						int(completedCount.Load()),
+						totalJobs,
+						int(openCount.Load()),
+						time.Since(startedAt),
+					)
+				case <-progressDone:
+					return
+				}
+			}
+		}()
+	}
 
 	for job := range jobs {
 		select {
 		case <-ctx.Done():
+			if ps.progressCallback != nil {
+				close(progressDone)
+				ps.progressCallback(int(completedCount.Load()), totalJobs, int(openCount.Load()), time.Since(startedAt))
+			}
 			return results
 		default:
 		}
@@ -119,14 +164,20 @@ func (ps *PortScanner) ScanResolvedBatch(ctx context.Context, targets []ScanTarg
 
 			res := ps.ScanSingle(ctx, j.Target, j.Port)
 			if res != nil && res.State == "open" {
+				openCount.Add(1)
 				mu.Lock()
 				results = append(results, *res)
 				mu.Unlock()
 			}
+			completedCount.Add(1)
 		}(job)
 	}
 
 	wg.Wait()
+	if ps.progressCallback != nil {
+		close(progressDone)
+		ps.progressCallback(int(completedCount.Load()), totalJobs, int(openCount.Load()), time.Since(startedAt))
+	}
 	return results
 }
 

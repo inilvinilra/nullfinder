@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"nullfinder/internal/dns"
@@ -23,19 +24,25 @@ import (
 )
 
 var (
-	BatchDomainsFile string
-	BatchIPsFile     string
-	BatchName        string
-	BatchMode        string
-	BatchProfile     string
+	BatchDomainsFile    string
+	BatchIPsFile        string
+	BatchName           string
+	BatchMode           string
+	BatchProfile        string
+	BatchPorts          string
+	BatchSkipPorts      bool
+	BatchMaxPortTargets int
 )
 
 type batchRunOptions struct {
-	DomainsFile string
-	IPsFile     string
-	Name        string
-	Mode        string
-	Profile     string
+	DomainsFile    string
+	IPsFile        string
+	Name           string
+	Mode           string
+	Profile        string
+	Ports          string
+	SkipPorts      bool
+	MaxPortTargets int
 }
 
 type batchRunResult struct {
@@ -66,11 +73,14 @@ into HTTP/port analysis, merges direct IP targets, and generates a single consol
 		logx.Log.Info().Msg("Initializing NullFinder batch orchestration...")
 		ctx := context.Background()
 		result, err := runBatchPipeline(ctx, batchRunOptions{
-			DomainsFile: BatchDomainsFile,
-			IPsFile:     BatchIPsFile,
-			Name:        BatchName,
-			Mode:        BatchMode,
-			Profile:     BatchProfile,
+			DomainsFile:    BatchDomainsFile,
+			IPsFile:        BatchIPsFile,
+			Name:           BatchName,
+			Mode:           BatchMode,
+			Profile:        BatchProfile,
+			Ports:          BatchPorts,
+			SkipPorts:      BatchSkipPorts,
+			MaxPortTargets: BatchMaxPortTargets,
 		})
 		if err != nil {
 			return err
@@ -97,6 +107,9 @@ func init() {
 	batchCmd.Flags().StringVar(&BatchName, "name", "batch-targets", "label used for the batch scan ID prefix")
 	batchCmd.Flags().StringVar(&BatchMode, "mode", "hybrid", "discovery mode for domain targets (local, passive, hybrid, full)")
 	batchCmd.Flags().StringVar(&BatchProfile, "profile", "web", "port profile to use for automated IP analysis (web, common)")
+	batchCmd.Flags().StringVar(&BatchPorts, "ports", "", "custom TCP port list for batch port analysis (e.g. 80,443,8080,8443)")
+	batchCmd.Flags().BoolVar(&BatchSkipPorts, "skip-portscan", false, "skip TCP port analysis and still generate HTTP/DNS reports")
+	batchCmd.Flags().IntVar(&BatchMaxPortTargets, "max-port-targets", 0, "maximum number of resolved targets to port scan (0 means unlimited)")
 	RootCmd.AddCommand(batchCmd)
 }
 
@@ -195,6 +208,28 @@ func batchPorts(profile string, explicit map[int]struct{}) []int {
 		ports = append(ports, port)
 	}
 	return dedupeInts(ports)
+}
+
+func parsePortList(raw string) ([]int, error) {
+	var ports []int
+	seen := make(map[int]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		port, err := strconv.Atoi(value)
+		if err != nil || port <= 0 || port > 65535 {
+			return nil, fmt.Errorf("invalid port value: %s", value)
+		}
+		if _, ok := seen[port]; ok {
+			continue
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	return ports, nil
 }
 
 func batchHTTPPorts(explicit map[int]struct{}) []int {
@@ -457,6 +492,16 @@ func runBatchPipeline(ctx context.Context, opts batchRunOptions) (*batchRunResul
 	}
 
 	scanPorts := batchPorts(opts.Profile, explicitPorts)
+	if strings.TrimSpace(opts.Ports) != "" {
+		parsedPorts, err := parsePortList(opts.Ports)
+		if err != nil {
+			return nil, err
+		}
+		for port := range explicitPorts {
+			parsedPorts = append(parsedPorts, port)
+		}
+		scanPorts = dedupeInts(parsedPorts)
+	}
 	httpPorts := batchHTTPPorts(explicitPorts)
 
 	var probeResults []httpprobe.ProbeResult
@@ -499,14 +544,48 @@ func runBatchPipeline(ctx context.Context, opts batchRunOptions) (*batchRunResul
 	var portResults []portscan.PortResult
 	var openPortLines []string
 	var honeypotPortLines []string
-	if len(scanTargets) > 0 {
-		logx.Log.Info().Int("count", len(scanTargets)).Msg("Running automated TCP port analysis...")
+	portScanTargets := scanTargets
+	if opts.MaxPortTargets > 0 && len(portScanTargets) > opts.MaxPortTargets {
+		logx.Log.Warn().
+			Int("targets", len(portScanTargets)).
+			Int("max_targets", opts.MaxPortTargets).
+			Msg("Limiting TCP port analysis target count")
+		portScanTargets = portScanTargets[:opts.MaxPortTargets]
+	}
+	if opts.SkipPorts {
+		logx.Log.Info().Msg("Skipping automated TCP port analysis by request")
+	} else if len(portScanTargets) > 0 {
+		totalJobs := len(portScanTargets) * len(scanPorts)
+		logx.Log.Info().
+			Int("targets", len(portScanTargets)).
+			Int("ports", len(scanPorts)).
+			Int("jobs", totalJobs).
+			Str("profile", opts.Profile).
+			Msg("Running automated TCP port analysis...")
+		if totalJobs > 50000 {
+			logx.Log.Warn().
+				Int("jobs", totalJobs).
+				Msg("Large TCP scan workload detected; consider --ports or --max-port-targets for faster first results")
+		}
 		scanner := portscan.NewPortScanner(
 			Cfg.PortScan.Workers,
 			Cfg.PortScan.RateLimitPerSecond,
 			Cfg.PortScan.TimeoutSeconds,
 		)
-		portResults = scanner.ScanResolvedBatch(ctx, scanTargets, scanPorts)
+		scanner.SetProgressCallback(func(completed int, total int, open int, elapsed time.Duration) {
+			percent := 0.0
+			if total > 0 {
+				percent = float64(completed) * 100 / float64(total)
+			}
+			logx.Log.Info().
+				Int("completed", completed).
+				Int("total", total).
+				Int("open", open).
+				Float64("percent", percent).
+				Str("elapsed", elapsed.Round(time.Second).String()).
+				Msg("TCP port analysis progress")
+		})
+		portResults = scanner.ScanResolvedBatch(ctx, portScanTargets, scanPorts)
 		for _, res := range portResults {
 			endpoint := res.Domain
 			if res.Address != "" && res.Address != res.Domain {
