@@ -19,8 +19,12 @@ var Registry []PassiveProvider
 var providerRuntimeState sync.Map
 
 type runtimeProviderState struct {
-	Failures      int
-	CooldownUntil time.Time
+	Failures          int
+	CooldownUntil     time.Time
+	Disabled          bool
+	DisableReason     string
+	DisableAnnounced  bool
+	CooldownAnnounced bool
 }
 
 // GetEnabledProviders filters and returns providers enabled in the config.
@@ -52,11 +56,12 @@ func EnumerateAll(ctx context.Context, domain string, cfg *config.Config) []Subd
 		go func(p PassiveProvider) {
 			defer wg.Done()
 
+			if reason, ok := providerDisabledReason(p.Name()); ok {
+				logProviderDisabledOnce(p.Name(), reason)
+				return
+			}
 			if until, ok := providerCooldownUntil(p.Name()); ok {
-				logx.Log.Info().
-					Str("provider", p.Name()).
-					Time("retry_after", until).
-					Msg("Skipping passive provider during cooldown window")
+				logProviderCooldownOnce(p.Name(), until)
 				return
 			}
 
@@ -235,6 +240,9 @@ func providerCooldownUntil(name string) (time.Time, bool) {
 	if time.Now().Before(state.CooldownUntil) {
 		return state.CooldownUntil, true
 	}
+	state.CooldownUntil = time.Time{}
+	state.CooldownAnnounced = false
+	providerRuntimeState.Store(name, state)
 	return time.Time{}, false
 }
 
@@ -246,8 +254,24 @@ func recordProviderFailure(name string, err error) {
 	value, _ := providerRuntimeState.Load(name)
 	state, _ := value.(runtimeProviderState)
 	state.Failures++
+	if shouldDisableProvider(err, state.Failures) {
+		state.Disabled = true
+		state.DisableReason = summarizeProviderError(err)
+		state.CooldownUntil = time.Time{}
+		state.CooldownAnnounced = false
+		if !state.DisableAnnounced {
+			logx.Log.Info().
+				Str("provider", name).
+				Str("reason", state.DisableReason).
+				Msg("Disabling passive provider for the remainder of this run")
+			state.DisableAnnounced = true
+		}
+		providerRuntimeState.Store(name, state)
+		return
+	}
 	if cooldown := providerFailureCooldown(err, state.Failures); cooldown > 0 {
 		state.CooldownUntil = time.Now().Add(cooldown)
+		state.CooldownAnnounced = false
 		logx.Log.Info().
 			Str("provider", name).
 			Dur("cooldown", cooldown).
@@ -261,7 +285,9 @@ func providerFailureCooldown(err error, failures int) time.Duration {
 	message := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(message, "429"), strings.Contains(message, "too many requests"):
-		return 2 * time.Minute
+		if failures >= 1 {
+			return 2 * time.Minute
+		}
 	case strings.Contains(message, "context deadline exceeded"), strings.Contains(message, "timeout"):
 		if failures >= 2 {
 			return 45 * time.Second
@@ -276,6 +302,61 @@ func providerFailureCooldown(err error, failures int) time.Duration {
 		}
 	}
 	return 0
+}
+
+func shouldDisableProvider(err error, failures int) bool {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "429"), strings.Contains(message, "too many requests"):
+		return true
+	case strings.Contains(message, "context deadline exceeded"), strings.Contains(message, "timeout"):
+		return failures >= 4
+	case strings.Contains(message, "connect: connection refused"), strings.Contains(message, "tls handshake timeout"):
+		return failures >= 3
+	case strings.Contains(message, "502"), strings.Contains(message, "503"), strings.Contains(message, "504"), strings.Contains(message, "eof"):
+		return failures >= 3
+	}
+	return false
+}
+
+func providerDisabledReason(name string) (string, bool) {
+	value, ok := providerRuntimeState.Load(name)
+	if !ok {
+		return "", false
+	}
+	state, ok := value.(runtimeProviderState)
+	if !ok || !state.Disabled {
+		return "", false
+	}
+	return state.DisableReason, true
+}
+
+func logProviderDisabledOnce(name, reason string) {
+	value, _ := providerRuntimeState.Load(name)
+	state, _ := value.(runtimeProviderState)
+	if state.DisableAnnounced {
+		return
+	}
+	logx.Log.Info().
+		Str("provider", name).
+		Str("reason", reason).
+		Msg("Passive provider remains disabled for this run")
+	state.DisableAnnounced = true
+	providerRuntimeState.Store(name, state)
+}
+
+func logProviderCooldownOnce(name string, until time.Time) {
+	value, _ := providerRuntimeState.Load(name)
+	state, _ := value.(runtimeProviderState)
+	if state.CooldownAnnounced {
+		return
+	}
+	logx.Log.Info().
+		Str("provider", name).
+		Time("retry_after", until).
+		Msg("Skipping passive provider during cooldown window")
+	state.CooldownAnnounced = true
+	providerRuntimeState.Store(name, state)
 }
 
 func summarizeProviderError(err error) string {
