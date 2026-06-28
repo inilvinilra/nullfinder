@@ -65,7 +65,7 @@ func EnumerateAll(ctx context.Context, domain string, cfg *config.Config) []Subd
 				return
 			}
 
-			logx.Log.Info().Str("provider", p.Name()).Msg("Querying passive provider...")
+			logx.Log.Debug().Str("provider", p.Name()).Msg("Querying passive provider")
 
 			pCtx, cancel := context.WithTimeout(ctx, providerTimeout(cfg, p.Name()))
 			defer cancel()
@@ -73,10 +73,7 @@ func EnumerateAll(ctx context.Context, domain string, cfg *config.Config) []Subd
 			res, err := enumerateWithRetry(pCtx, p, domain)
 			if err != nil {
 				recordProviderFailure(p.Name(), err)
-				logx.Log.Warn().
-					Err(err).
-					Str("provider", p.Name()).
-					Msg("Passive provider execution failed")
+				logProviderFailure(p.Name(), err)
 				return
 			}
 			recordProviderSuccess(p.Name())
@@ -263,7 +260,7 @@ func recordProviderFailure(name string, err error) {
 			logx.Log.Info().
 				Str("provider", name).
 				Str("reason", state.DisableReason).
-				Msg("Disabling passive provider for the remainder of this run")
+				Msg("Passive provider disabled for this run")
 			state.DisableAnnounced = true
 		}
 		providerRuntimeState.Store(name, state)
@@ -274,9 +271,9 @@ func recordProviderFailure(name string, err error) {
 		state.CooldownAnnounced = false
 		logx.Log.Info().
 			Str("provider", name).
-			Dur("cooldown", cooldown).
+			Str("cooldown", cooldown.String()).
 			Str("reason", summarizeProviderError(err)).
-			Msg("Cooling down passive provider after repeated failures")
+			Msg("Passive provider cooled down after repeated failures")
 	}
 	providerRuntimeState.Store(name, state)
 }
@@ -351,12 +348,23 @@ func logProviderCooldownOnce(name string, until time.Time) {
 	if state.CooldownAnnounced {
 		return
 	}
-	logx.Log.Info().
+	logx.Log.Debug().
 		Str("provider", name).
 		Time("retry_after", until).
-		Msg("Skipping passive provider during cooldown window")
+		Msg("Passive provider skipped during cooldown window")
 	state.CooldownAnnounced = true
 	providerRuntimeState.Store(name, state)
+}
+
+func logProviderFailure(name string, err error) {
+	event := logx.Log.Debug()
+	if !isRetryableProviderError(err) {
+		event = logx.Log.Info()
+	}
+	event.
+		Str("provider", name).
+		Str("reason", summarizeProviderError(err)).
+		Msg("Passive provider unavailable, continuing")
 }
 
 func summarizeProviderError(err error) string {
