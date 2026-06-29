@@ -98,6 +98,8 @@ Primary scan output is written to `results/{scan-id}/`:
 - `report.txt`
 - `all_subdomains.txt`
 - `resolved_subdomains.txt`
+- `resolved_ips.txt`
+- `domain_ip_map.txt`
 - `candidate_subdomains.txt`
 - `live_urls.txt`
 - `open_ports.txt`

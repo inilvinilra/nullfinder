@@ -6,7 +6,7 @@ import (
 )
 
 func BuildPortScanTargets(resolvedSubdomains []string, dnsResults []dns.ResolutionResult) []portscan.ScanTarget {
-	seen := make(map[portscan.ScanTarget]struct{})
+	seenAddress := make(map[string]struct{})
 	var targets []portscan.ScanTarget
 
 	for _, domain := range resolvedSubdomains {
@@ -16,11 +16,12 @@ func BuildPortScanTargets(resolvedSubdomains []string, dnsResults []dns.Resoluti
 				continue
 			}
 			for _, ip := range dnsResult.IPs {
-				target := portscan.ScanTarget{Domain: domain, Address: ip}
-				if _, exists := seen[target]; exists {
+				if _, exists := seenAddress[ip]; exists {
+					appended = true
 					continue
 				}
-				seen[target] = struct{}{}
+				target := portscan.ScanTarget{Domain: domain, Address: ip}
+				seenAddress[ip] = struct{}{}
 				targets = append(targets, target)
 				appended = true
 			}
@@ -30,10 +31,10 @@ func BuildPortScanTargets(resolvedSubdomains []string, dnsResults []dns.Resoluti
 		}
 
 		target := portscan.ScanTarget{Domain: domain, Address: domain}
-		if _, exists := seen[target]; exists {
+		if _, exists := seenAddress[target.Address]; exists {
 			continue
 		}
-		seen[target] = struct{}{}
+		seenAddress[target.Address] = struct{}{}
 		targets = append(targets, target)
 	}
 

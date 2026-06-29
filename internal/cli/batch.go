@@ -185,13 +185,17 @@ func parseDirectIPTarget(raw string) (string, int, bool) {
 }
 
 func dedupeScanTargets(targets []portscan.ScanTarget) []portscan.ScanTarget {
-	seen := make(map[portscan.ScanTarget]struct{})
+	seen := make(map[string]struct{})
 	var deduped []portscan.ScanTarget
 	for _, target := range targets {
-		if _, ok := seen[target]; ok {
+		key := target.Address
+		if key == "" {
+			key = target.Domain
+		}
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[target] = struct{}{}
+		seen[key] = struct{}{}
 		deduped = append(deduped, target)
 	}
 	return deduped
@@ -265,6 +269,34 @@ func scanTargetStrings(targets []portscan.ScanTarget) []string {
 	}
 	sort.Strings(lines)
 	return lines
+}
+
+func resolvedIPOutputs(resolvedSubdomains []string, dnsResults []dns.ResolutionResult) ([]string, []string) {
+	resolvedSet := make(map[string]struct{}, len(resolvedSubdomains))
+	for _, domain := range resolvedSubdomains {
+		resolvedSet[domain] = struct{}{}
+	}
+
+	ipSet := make(map[string]struct{})
+	var mapLines []string
+	for _, result := range dnsResults {
+		if _, ok := resolvedSet[result.Domain]; !ok || len(result.IPs) == 0 {
+			continue
+		}
+		ips := dedupeStrings(result.IPs)
+		for _, ip := range ips {
+			ipSet[ip] = struct{}{}
+		}
+		mapLines = append(mapLines, fmt.Sprintf("%s -> %s", result.Domain, strings.Join(ips, ", ")))
+	}
+
+	ips := make([]string, 0, len(ipSet))
+	for ip := range ipSet {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	sort.Strings(mapLines)
+	return ips, mapLines
 }
 
 func buildBatchAssets(resolvedSubdomains []string, dnsResults []dns.ResolutionResult, directHosts []string, probeResults []httpprobe.ProbeResult, portResults []portscan.PortResult) []storage.AssetRecord {
@@ -464,6 +496,13 @@ func runBatchPipeline(ctx context.Context, opts batchRunOptions) (*batchRunResul
 	if len(cnames) > 0 {
 		_ = output.WriteLines(pm.GetFilePath("cnames.txt"), cnames)
 	}
+	resolvedIPs, domainIPMap := resolvedIPOutputs(resolvedSubdomains, finalDNSResults)
+	if len(resolvedIPs) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("resolved_ips.txt"), resolvedIPs)
+	}
+	if len(domainIPMap) > 0 {
+		_ = output.WriteLines(pm.GetFilePath("domain_ip_map.txt"), domainIPMap)
+	}
 
 	scanTargets := scanpkg.BuildPortScanTargets(resolvedSubdomains, finalDNSResults)
 	explicitPorts := make(map[int]struct{})
@@ -490,6 +529,11 @@ func runBatchPipeline(ctx context.Context, opts batchRunOptions) (*batchRunResul
 	if lines := scanTargetStrings(scanTargets); len(lines) > 0 {
 		_ = output.WriteLines(pm.GetFilePath("combined_targets.txt"), lines)
 	}
+	logx.Log.Info().
+		Int("resolved_domains", len(resolvedSubdomains)).
+		Int("resolved_ips", len(resolvedIPs)).
+		Int("port_targets", len(scanTargets)).
+		Msg("Prepared resolved IPs for downstream analysis")
 
 	scanPorts := batchPorts(opts.Profile, explicitPorts)
 	if strings.TrimSpace(opts.Ports) != "" {

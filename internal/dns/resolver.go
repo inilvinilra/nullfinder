@@ -137,7 +137,8 @@ func (r *Resolver) ResolveBatch(ctx context.Context, domains []string) []Resolut
 	for i, domain := range domains {
 		select {
 		case <-ctx.Done():
-			break
+			wg.Wait()
+			return results
 		default:
 		}
 
